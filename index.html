@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Gargantua</title>
+    <link rel="stylesheet" href="src/css/main.css">
+</head>
+<body>
+
+    <div class="ui title">
+        <h1>Gargantua</h1>
+        <span>Kerr Black Hole · a/M = 0.998</span>
+    </div>
+
+    <div class="ui info">
+        <span id="fps">-- fps</span> · <span>M = 100 Million M☉</span>
+    </div>
+
+    <div class="ui camera-hint">
+        Drag to orbit · Scroll to zoom
+    </div>
+
+    <div class="ui controls">
+        <button class="btn on" id="doppler">Doppler</button>
+        <button class="btn on" id="redshift">Redshift</button>
+    </div>
+
+    <canvas id="glcanvas"></canvas>
+
+    <script type="module" src="src/js/main.js"></script>
+</body>
+</html>

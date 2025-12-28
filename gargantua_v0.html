@@ -1,0 +1,569 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Gargantua</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background: #000;
+            font-family: 'Courier New', Courier, monospace;
+        }
+        canvas {
+            display: block;
+            width: 100vw;
+            height: 100vh;
+        }
+        .ui {
+            position: absolute;
+            pointer-events: none;
+            color: rgba(255, 200, 150, 0.4);
+            font-size: 10px;
+            letter-spacing: 3px;
+            text-transform: uppercase;
+        }
+        .title {
+            top: 30px;
+            left: 35px;
+        }
+        .title h1 {
+            font-size: 14px;
+            font-weight: normal;
+            letter-spacing: 8px;
+            color: rgba(255, 220, 180, 0.6);
+            margin: 0 0 5px 0;
+        }
+        .info {
+            bottom: 30px;
+            left: 35px;
+        }
+        .controls {
+            bottom: 30px;
+            right: 35px;
+            pointer-events: auto;
+            display: flex;
+            gap: 8px;
+        }
+        .btn {
+            background: rgba(0,0,0,0.4);
+            border: 1px solid rgba(255,180,120,0.25);
+            color: rgba(255,200,160,0.5);
+            font-family: inherit;
+            font-size: 9px;
+            letter-spacing: 2px;
+            padding: 6px 10px;
+            cursor: pointer;
+            text-transform: uppercase;
+            transition: all 0.3s;
+        }
+        .btn:hover, .btn.on {
+            border-color: rgba(255,180,120,0.6);
+            color: rgba(255,220,180,0.9);
+            background: rgba(255,150,80,0.1);
+        }
+    </style>
+</head>
+<body>
+
+    <div class="ui title">
+        <h1>Gargantua</h1>
+        <span>Kerr Black Hole · a/M = 0.998</span>
+    </div>
+    
+    <div class="ui info">
+        <span id="fps">-- fps</span> · <span>M = 100 Million M☉</span>
+    </div>
+    
+    <div class="ui controls">
+        <button class="btn on" id="doppler">Doppler</button>
+        <button class="btn on" id="redshift">Redshift</button>
+    </div>
+
+    <canvas id="glcanvas"></canvas>
+
+    <script id="vs" type="x-shader/x-vertex">
+        attribute vec2 position;
+        void main() {
+            gl_Position = vec4(position, 0.0, 1.0);
+        }
+    </script>
+
+    <script id="fs" type="x-shader/x-fragment">
+        precision highp float;
+
+        uniform vec2 uResolution;
+        uniform float uTime;
+        uniform float uDoppler;
+        uniform float uRedshift;
+
+        // ═══════════════════════════════════════════════════════════════
+        // CONFIGURATION
+        // ═══════════════════════════════════════════════════════════════
+        
+        #define PI 3.14159265359
+        #define MAX_STEPS 280
+        
+        // Kerr black hole parameters (a/M = 0.998)
+        #define M 1.0
+        #define SPIN 0.998
+        #define R_HORIZON 1.063
+        #define R_ISCO 1.237
+        
+        // Disk geometry  
+        #define DISK_INNER 2.8
+        #define DISK_OUTER 14.0
+        #define DISK_HEIGHT 0.12
+        
+        // Camera
+        #define CAM_DIST 45.0
+        #define CAM_HEIGHT 5.5
+        #define CAM_ZOOM 2.0
+
+        // ═══════════════════════════════════════════════════════════════
+        // NOISE
+        // ═══════════════════════════════════════════════════════════════
+        
+        float hash(float n) { 
+            return fract(sin(n) * 43758.5453123); 
+        }
+        
+        float hash3(vec3 p) {
+            p = fract(p * vec3(0.1031, 0.1030, 0.0973));
+            p += dot(p, p.yxz + 33.33);
+            return fract((p.x + p.y) * p.z);
+        }
+
+        float noise(vec3 x) {
+            vec3 p = floor(x);
+            vec3 f = fract(x);
+            f = f * f * (3.0 - 2.0 * f);
+            float n = p.x + p.y * 57.0 + 113.0 * p.z;
+            return mix(mix(mix(hash(n + 0.0), hash(n + 1.0), f.x),
+                           mix(hash(n + 57.0), hash(n + 58.0), f.x), f.y),
+                       mix(mix(hash(n + 113.0), hash(n + 114.0), f.x),
+                           mix(hash(n + 170.0), hash(n + 171.0), f.x), f.y), f.z);
+        }
+
+        float fbm(vec3 p) {
+            float f = 0.0;
+            float w = 0.5;
+            for (int i = 0; i < 5; i++) {
+                f += w * noise(p);
+                p *= 2.03;
+                w *= 0.5;
+            }
+            return f;
+        }
+
+        // ═══════════════════════════════════════════════════════════════
+        // PHYSICS
+        // ═══════════════════════════════════════════════════════════════
+        
+        // Kerr metric functions
+        float kerrDelta(float r) {
+            return r * r - 2.0 * M * r + SPIN * SPIN;
+        }
+        
+        // Gravitational redshift from Kerr geometry
+        float gravRedshift(float r) {
+            float Delta = kerrDelta(r);
+            return sqrt(max(0.1, Delta / (r * r)));
+        }
+        
+        // Keplerian angular velocity with Kerr correction
+        float keplerOmega(float r) {
+            float r3 = r * r * r;
+            return sqrt(M / r3) / (1.0 + SPIN * sqrt(M / r3));
+        }
+        
+        // Blackbody radiation
+        vec3 blackbody(float T) {
+            // More physically accurate blackbody approximation
+            vec3 col;
+            float t = T / 1000.0;  // Normalize to thousands K
+            
+            if (t < 3.0) {
+                col = vec3(1.0, 0.22 * t, 0.0) * (t / 3.0);
+            } else if (t < 6.0) {
+                float s = (t - 3.0) / 3.0;
+                col = vec3(1.0, 0.66 + s * 0.24, s * 0.3);
+            } else if (t < 10.0) {
+                float s = (t - 6.0) / 4.0;
+                col = vec3(1.0, 0.9 + s * 0.1, 0.3 + s * 0.5);
+            } else {
+                float s = min((t - 10.0) / 10.0, 1.0);
+                col = vec3(1.0 - s * 0.1, 1.0, 0.8 + s * 0.2);
+            }
+            
+            return col;
+        }
+
+        // ═══════════════════════════════════════════════════════════════
+        // ACCRETION DISK SAMPLING
+        // ═══════════════════════════════════════════════════════════════
+        
+        vec4 sampleDisk(vec3 p, vec3 rayDir, float time) {
+            float r = length(p.xz);
+            
+            // Bounds check
+            if (r < DISK_INNER * 0.9 || r > DISK_OUTER * 1.1) {
+                return vec4(0.0);
+            }
+            
+            // Flaring scale height
+            float H = DISK_HEIGHT * (1.0 + 0.8 * (r / DISK_INNER - 1.0));
+            if (abs(p.y) > H * 5.0) {
+                return vec4(0.0);
+            }
+
+            // ─── Keplerian Rotation ───
+            float omega = keplerOmega(r);
+            float angle = atan(p.z, p.x);
+            float rotAngle = angle + time * omega * 0.8;
+
+            // ─── Turbulent Structure ───
+            // Stretched noise for "streaky" appearance
+            vec3 uv = vec3(r * 2.5, p.y / H * 2.0, rotAngle * 2.5);
+            float turb = fbm(uv);
+            
+            // Spiral arms
+            float spiral = sin(rotAngle * 2.0 + log(r + 0.5) * 4.0);
+            spiral = spiral * 0.5 + 0.5;
+            
+            // Fine filaments
+            vec3 uvFine = vec3(r * 6.0, p.y / H * 4.0, rotAngle * 8.0);
+            float filaments = fbm(uvFine);
+            filaments = pow(filaments, 1.5);
+            
+            // ─── Density ───
+            float radialFade = smoothstep(DISK_INNER * 0.9, DISK_INNER + 0.8, r);
+            radialFade *= smoothstep(DISK_OUTER * 1.05, DISK_OUTER - 1.5, r);
+            
+            float verticalFade = exp(-0.5 * p.y * p.y / (H * H));
+            
+            float density = smoothstep(0.3, 0.75, turb);
+            density *= radialFade * verticalFade;
+            density *= 0.6 + 0.25 * spiral + 0.15 * filaments;
+            
+            // Bright inner ring near ISCO
+            float innerRing = exp(-pow((r - DISK_INNER * 1.1) / 0.8, 2.0));
+            density += innerRing * 0.4 * verticalFade;
+            
+            // ─── Hotspots (magnetic reconnection) ───
+            float spots = 0.0;
+            for (float i = 0.0; i < 3.0; i++) {
+                float spotR = DISK_INNER * (1.2 + i * 0.5);
+                float spotOmega = keplerOmega(spotR);
+                float spotPhi = time * spotOmega * 0.8 + i * 2.1;
+                vec2 spotPos = vec2(cos(spotPhi), sin(spotPhi)) * spotR;
+                float d = length(p.xz - spotPos);
+                spots += exp(-d * d * 1.5) * 0.5;
+            }
+            density += spots * verticalFade;
+            
+            // ─── Temperature (Novikov-Thorne profile) ───
+            float rRatio = r / DISK_INNER;
+            float innerFac = max(0.0, 1.0 - sqrt(1.0 / rRatio));
+            float baseTemp = pow(rRatio, -0.75) * pow(max(innerFac, 0.01), 0.25);
+            baseTemp *= 0.85 + 0.15 * turb;
+            baseTemp += spots * 0.25;
+            
+            // Scale to physical temperature (~10000K at inner edge)
+            float temp = baseTemp * 12000.0;
+            
+            // ─── Doppler Beaming ───
+            float dopplerFac = 1.0;
+            float tempShift = 1.0;
+            
+            if (uDoppler > 0.5) {
+                // Orbital velocity
+                float vOrbit = sqrt(M / r) / (1.0 + SPIN * sqrt(M / (r * r * r)));
+                vOrbit = min(vOrbit, 0.8);
+                
+                // Gas velocity direction (prograde)
+                vec3 gasVel = normalize(vec3(-p.z, 0.0, p.x)) * vOrbit;
+                
+                // Relativistic Doppler: g = 1/[γ(1 - β·n̂)]
+                float gamma = 1.0 / sqrt(1.0 - vOrbit * vOrbit);
+                float cosTheta = dot(normalize(gasVel), normalize(rayDir));
+                float g = 1.0 / (gamma * (1.0 - vOrbit * cosTheta));
+                
+                // Intensity ∝ g³, temperature ∝ g
+                dopplerFac = pow(clamp(g, 0.15, 4.5), 3.0);
+                tempShift = clamp(g, 0.5, 2.0);
+            }
+            
+            // ─── Gravitational Redshift ───
+            float gRed = 1.0;
+            if (uRedshift > 0.5) {
+                gRed = gravRedshift(r);
+            }
+            
+            // ─── Final Color ───
+            vec3 emission = blackbody(temp * tempShift * gRed);
+            float intensity = density * dopplerFac * gRed;
+            
+            return vec4(emission, intensity);
+        }
+
+        // ═══════════════════════════════════════════════════════════════
+        // STAR FIELD
+        // ═══════════════════════════════════════════════════════════════
+        
+        vec3 stars(vec3 dir, float minR) {
+            vec3 col = vec3(0.0);
+            
+            // Lensing amplification near photon sphere
+            float photonDist = abs(minR - 3.0 * M);
+            float lensAmp = 1.0 + 2.5 * exp(-photonDist * photonDist * 2.0);
+            
+            // Multi-layer stars
+            for (float layer = 0.0; layer < 3.0; layer++) {
+                float scale = 60.0 + layer * 40.0;
+                vec3 p = dir * scale;
+                vec3 id = floor(p);
+                vec3 f = fract(p) - 0.5;
+                
+                float rnd = hash3(id + layer * 100.0);
+                
+                if (rnd > 0.97) {
+                    float d = length(f);
+                    float brightness = exp(-d * d * 40.0) * (1.0 - layer * 0.2);
+                    brightness *= lensAmp;
+                    
+                    // Star color temperature
+                    float temp = hash3(id + vec3(50.0));
+                    vec3 starCol = temp < 0.25 ? vec3(1.0, 0.7, 0.5) :
+                                   temp < 0.6 ? vec3(1.0, 0.95, 0.85) :
+                                                vec3(0.8, 0.9, 1.0);
+                    
+                    col += starCol * brightness;
+                }
+            }
+            
+            return col * 0.3;
+        }
+
+        // ═══════════════════════════════════════════════════════════════
+        // MAIN
+        // ═══════════════════════════════════════════════════════════════
+        
+        void main() {
+            vec2 uv = (gl_FragCoord.xy - 0.5 * uResolution.xy) / uResolution.y;
+
+            // ─── Camera ───
+            vec3 ro = vec3(0.0, CAM_HEIGHT, -CAM_DIST);
+            vec3 ta = vec3(0.0, 0.0, 0.0);
+            
+            vec3 fw = normalize(ta - ro);
+            vec3 rt = normalize(cross(fw, vec3(0.0, 1.0, 0.0)));
+            vec3 up = normalize(cross(rt, fw));
+            
+            vec3 rd = normalize(uv.x * rt + uv.y * up + CAM_ZOOM * fw);
+
+            // ─── Ray State ───
+            vec3 pos = ro;
+            vec3 vel = rd;
+            vec3 col = vec3(0.0);
+            float transmission = 1.0;
+            float minR = 1000.0;
+            
+            // ─── Integration Loop ───
+            for (int i = 0; i < MAX_STEPS; i++) {
+                float r = length(pos);
+                minR = min(minR, r);
+                
+                // Event Horizon (with visual shadow)
+                if (r < R_HORIZON * 1.8) {
+                    // Subtle edge glow
+                    float edgeDist = r - R_HORIZON * 1.8;
+                    float edgeGlow = exp(-edgeDist * edgeDist * 5.0) * 0.08;
+                    col += vec3(0.3, 0.1, 0.02) * edgeGlow * transmission;
+                    transmission = 0.0;
+                    break;
+                }
+                
+                // ─── Gravitational Lensing ───
+                // Enhanced with GR correction for strong field
+                float grFactor = 1.0 + 2.5 * M / r;  // GR correction
+                float force = 6.0 * M / (r * r) * grFactor;
+                vec3 acc = normalize(-pos) * force;
+                
+                // Frame dragging (Kerr effect)
+                vec3 L = cross(pos, vel);
+                vec3 drag = 2.5 * SPIN * cross(L, pos) / (r * r * r * r);
+                acc += drag;
+                
+                // Apply acceleration
+                vel = normalize(vel + acc * 0.035);
+                
+                // ─── Adaptive Step Size ───
+                float stepSize = max(0.03, r * 0.055);
+                
+                // Smaller steps in disk region
+                float diskR = length(pos.xz);
+                if (abs(pos.y) < DISK_HEIGHT * 6.0 && diskR < DISK_OUTER * 1.2 && diskR > DISK_INNER * 0.8) {
+                    stepSize *= 0.5;
+                }
+                
+                vec3 nextPos = pos + vel * stepSize;
+                vec3 midPos = (pos + nextPos) * 0.5;
+                
+                // ─── Disk Sampling ───
+                if (abs(midPos.y) < DISK_HEIGHT * 6.0) {
+                    vec4 diskData = sampleDisk(midPos, vel, uTime);
+                    
+                    if (diskData.a > 0.001) {
+                        float light = diskData.a * stepSize * 3.0;
+                        
+                        // Beer's Law accumulation
+                        col += diskData.rgb * light * transmission;
+                        transmission *= exp(-light * 1.0);
+                        
+                        if (transmission < 0.01) break;
+                    }
+                }
+                
+                pos = nextPos;
+                
+                // Far escape
+                if (r > 120.0) break;
+            }
+            
+            // ─── Photon Ring ───
+            float ringDist = abs(minR - 3.0 * M);
+            float ringGlow = exp(-ringDist * ringDist * 20.0) * 0.4;
+            col += vec3(1.0, 0.92, 0.8) * ringGlow * transmission;
+            
+            // ─── Background Stars ───
+            if (transmission > 0.01) {
+                col += stars(vel, minR) * transmission;
+            }
+
+            // ═══ POST PROCESSING ═══
+            
+            // Bloom on bright areas
+            float brightness = dot(col, vec3(0.2126, 0.7152, 0.0722));
+            col += col * max(0.0, brightness - 0.5) * 0.3;
+            
+            // ACES Tone Mapping
+            col *= 0.55;
+            float a = 2.51, b = 0.03, c = 2.43, d = 0.59, e = 0.14;
+            col = clamp((col * (a * col + b)) / (col * (c * col + d) + e), 0.0, 1.0);
+            
+            // Gamma
+            col = pow(col, vec3(1.0 / 2.2));
+            
+            // Warmth
+            col.r *= 1.02;
+            col.b *= 0.97;
+            
+            // Vignette
+            col *= 1.0 - 0.45 * length(uv * 0.85);
+            
+            // Film grain
+            col += (hash(uv.x + uv.y * 100.0 + fract(uTime)) - 0.5) * 0.025;
+
+            gl_FragColor = vec4(col, 1.0);
+        }
+    </script>
+
+    <script>
+        const canvas = document.getElementById("glcanvas");
+        const gl = canvas.getContext("webgl", {
+            alpha: false,
+            antialias: false,
+            depth: false,
+            preserveDrawingBuffer: false,
+            powerPreference: 'high-performance'
+        });
+
+        if (!gl) {
+            document.body.innerHTML = "<div style='color:#fa8;padding:40px'>WebGL required</div>";
+            throw 'No WebGL';
+        }
+
+        // Resize
+        function resize() {
+            const dpr = Math.min(devicePixelRatio, 1.5);
+            canvas.width = Math.floor(innerWidth * dpr);
+            canvas.height = Math.floor(innerHeight * dpr);
+            gl.viewport(0, 0, canvas.width, canvas.height);
+        }
+        addEventListener("resize", resize);
+        resize();
+
+        // Shaders
+        function createShader(type, id) {
+            const src = document.getElementById(id).innerText;
+            const sh = gl.createShader(type);
+            gl.shaderSource(sh, src);
+            gl.compileShader(sh);
+            if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) {
+                console.error(gl.getShaderInfoLog(sh));
+                return null;
+            }
+            return sh;
+        }
+
+        const prog = gl.createProgram();
+        gl.attachShader(prog, createShader(gl.VERTEX_SHADER, "vs"));
+        gl.attachShader(prog, createShader(gl.FRAGMENT_SHADER, "fs"));
+        gl.linkProgram(prog);
+        gl.useProgram(prog);
+
+        // Geometry
+        const buf = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, -1,1, -1,1, 1,-1, 1,1]), gl.STATIC_DRAW);
+        const loc = gl.getAttribLocation(prog, "position");
+        gl.enableVertexAttribArray(loc);
+        gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
+
+        // Uniforms
+        const uRes = gl.getUniformLocation(prog, "uResolution");
+        const uTime = gl.getUniformLocation(prog, "uTime");
+        const uDoppler = gl.getUniformLocation(prog, "uDoppler");
+        const uRedshift = gl.getUniformLocation(prog, "uRedshift");
+
+        // Settings
+        const settings = { doppler: true, redshift: true };
+        
+        function setupBtn(id, key) {
+            const btn = document.getElementById(id);
+            btn.onclick = () => {
+                settings[key] = !settings[key];
+                btn.classList.toggle('on', settings[key]);
+            };
+        }
+        setupBtn('doppler', 'doppler');
+        setupBtn('redshift', 'redshift');
+
+        // FPS counter
+        let frameCount = 0;
+        let lastTime = performance.now();
+        const fpsEl = document.getElementById('fps');
+
+        // Render loop
+        function loop(now) {
+            frameCount++;
+            if (now - lastTime > 1000) {
+                fpsEl.textContent = frameCount + ' fps';
+                frameCount = 0;
+                lastTime = now;
+            }
+            
+            gl.uniform2f(uRes, canvas.width, canvas.height);
+            gl.uniform1f(uTime, now * 0.001);
+            gl.uniform1f(uDoppler, settings.doppler ? 1.0 : 0.0);
+            gl.uniform1f(uRedshift, settings.redshift ? 1.0 : 0.0);
+            
+            gl.drawArrays(gl.TRIANGLES, 0, 6);
+            requestAnimationFrame(loop);
+        }
+        requestAnimationFrame(loop);
+    </script>
+</body>
+</html>

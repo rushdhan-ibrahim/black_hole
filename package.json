@@ -1,0 +1,11 @@
+{
+  "name": "gargantua",
+  "version": "0.1.0",
+  "description": "Interstellar-inspired Kerr black hole visualization",
+  "scripts": {
+    "dev": "npx live-server --port=3000 --open=/index.html",
+    "start": "npx http-server -p 3000 -o"
+  },
+  "keywords": ["black-hole", "webgl", "gargantua", "interstellar", "physics"],
+  "license": "MIT"
+}

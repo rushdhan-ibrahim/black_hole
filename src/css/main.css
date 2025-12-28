@@ -1,0 +1,90 @@
+body {
+    margin: 0;
+    overflow: hidden;
+    background: #000;
+    font-family: 'Courier New', Courier, monospace;
+}
+
+canvas {
+    display: block;
+    width: 100vw;
+    height: 100vh;
+}
+
+.ui {
+    position: absolute;
+    pointer-events: none;
+    color: rgba(255, 200, 150, 0.4);
+    font-size: 10px;
+    letter-spacing: 3px;
+    text-transform: uppercase;
+}
+
+.title {
+    top: 30px;
+    left: 35px;
+}
+
+.title h1 {
+    font-size: 14px;
+    font-weight: normal;
+    letter-spacing: 8px;
+    color: rgba(255, 220, 180, 0.6);
+    margin: 0 0 5px 0;
+}
+
+.info {
+    bottom: 30px;
+    left: 35px;
+}
+
+.controls {
+    bottom: 30px;
+    right: 35px;
+    pointer-events: auto;
+    display: flex;
+    gap: 8px;
+}
+
+.btn {
+    background: rgba(0, 0, 0, 0.4);
+    border: 1px solid rgba(255, 180, 120, 0.25);
+    color: rgba(255, 200, 160, 0.5);
+    font-family: inherit;
+    font-size: 9px;
+    letter-spacing: 2px;
+    padding: 6px 10px;
+    cursor: pointer;
+    text-transform: uppercase;
+    transition: all 0.3s;
+}
+
+.btn:hover,
+.btn.on {
+    border-color: rgba(255, 180, 120, 0.6);
+    color: rgba(255, 220, 180, 0.9);
+    background: rgba(255, 150, 80, 0.1);
+}
+
+/* Camera controls indicator */
+.camera-hint {
+    bottom: 60px;
+    left: 35px;
+    opacity: 0.5;
+    font-size: 9px;
+    transition: opacity 0.5s ease;
+}
+
+.camera-hint.hidden {
+    opacity: 0;
+    pointer-events: none;
+}
+
+/* Cursor for canvas */
+canvas {
+    cursor: grab;
+}
+
+canvas:active {
+    cursor: grabbing;
+}
