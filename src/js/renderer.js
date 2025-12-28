@@ -182,7 +182,7 @@ export class GargantuaRenderer {
         } else if (this.mouse.button === 2) {
             // Right button: zoom (vertical drag)
             this.camera.targetDistance *= 1.0 + dy * 0.005;
-            this.camera.targetDistance = Math.max(10, Math.min(100, this.camera.targetDistance));
+            this.camera.targetDistance = Math.max(20, Math.min(80, this.camera.targetDistance));
         }
 
         this.mouse.lastX = e.clientX;
@@ -196,10 +196,10 @@ export class GargantuaRenderer {
     onWheel(e) {
         e.preventDefault();
 
-        // Zoom with scroll wheel
+        // Zoom with scroll wheel (scroll down = zoom out = increase distance)
         const delta = e.deltaY > 0 ? 1.1 : 0.9;
         this.camera.targetDistance *= delta;
-        this.camera.targetDistance = Math.max(10, Math.min(100, this.camera.targetDistance));
+        this.camera.targetDistance = Math.max(20, Math.min(50, this.camera.targetDistance));
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -243,7 +243,7 @@ export class GargantuaRenderer {
             if (this.touch.lastDist > 0) {
                 const scale = this.touch.lastDist / dist;
                 this.camera.targetDistance *= scale;
-                this.camera.targetDistance = Math.max(10, Math.min(100, this.camera.targetDistance));
+                this.camera.targetDistance = Math.max(20, Math.min(80, this.camera.targetDistance));
             }
 
             this.touch.lastDist = dist;

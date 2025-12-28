@@ -17,8 +17,8 @@ uniform float uCamZoom;       // FOV zoom factor
 
 #define PI 3.14159265359
 
-// Integration - balanced performance/quality
-#define MAX_STEPS 160
+// Integration - extended range support (20-80)
+#define MAX_STEPS 280
 #define STEP_SIZE 0.25
 
 // Black hole
@@ -262,59 +262,71 @@ vec4 sampleDisk(vec3 p, vec3 rayDir, float time, int crossingNum) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// STARFIELD (Very dense for striking lensing)
+// STARFIELD (Maximum density, slightly sharper)
 // ═══════════════════════════════════════════════════════════════════════════
 
 vec3 stars(vec3 dir, float lensing) {
     vec3 col = vec3(0.0);
 
     // Layer 1: Ultra-dense faint stars (background dust)
-    vec3 p1 = dir * 25.0;
+    vec3 p1 = dir * 20.0;
     vec3 id1 = floor(p1);
     float rnd1 = hash3(id1);
-    if (rnd1 > 0.75) {  // Very dense
+    if (rnd1 > 0.65) {  // Even denser
         vec3 f1 = fract(p1) - 0.5;
         float d1 = length(f1);
-        float b1 = exp(-d1 * d1 * 70.0) * lensing * 0.5;
+        float b1 = exp(-d1 * d1 * 90.0) * lensing * 0.45;  // Sharper
         col += vec3(1.0, 0.98, 0.96) * b1;
     }
 
     // Layer 2: Dense small stars
-    vec3 p2 = dir * 45.0;
+    vec3 p2 = dir * 40.0;
     vec3 id2 = floor(p2);
     float rnd2 = hash3(id2 + 30.0);
-    if (rnd2 > 0.80) {  // Dense
+    if (rnd2 > 0.70) {  // Denser
         vec3 f2 = fract(p2) - 0.5;
         float d2 = length(f2);
-        float b2 = exp(-d2 * d2 * 55.0) * lensing * 0.7;
+        float b2 = exp(-d2 * d2 * 75.0) * lensing * 0.6;  // Sharper
         col += vec3(0.95, 0.97, 1.0) * b2;
     }
 
     // Layer 3: Medium stars
-    vec3 p3 = dir * 70.0;
+    vec3 p3 = dir * 65.0;
     vec3 id3 = floor(p3);
     float rnd3 = hash3(id3 + 60.0);
-    if (rnd3 > 0.85) {
+    if (rnd3 > 0.78) {  // Denser
         vec3 f3 = fract(p3) - 0.5;
         float d3 = length(f3);
-        float b3 = exp(-d3 * d3 * 40.0) * lensing * 0.9;
-        vec3 starCol = rnd3 > 0.93 ? vec3(1.0, 0.85, 0.65) : vec3(0.85, 0.92, 1.0);
+        float b3 = exp(-d3 * d3 * 55.0) * lensing * 0.8;  // Sharper
+        vec3 starCol = rnd3 > 0.90 ? vec3(1.0, 0.85, 0.65) : vec3(0.85, 0.92, 1.0);
         col += starCol * b3;
     }
 
     // Layer 4: Bright accent stars
-    vec3 p4 = dir * 100.0;
+    vec3 p4 = dir * 95.0;
     vec3 id4 = floor(p4);
     float rnd4 = hash3(id4 + 100.0);
-    if (rnd4 > 0.92) {
+    if (rnd4 > 0.88) {  // Denser
         vec3 f4 = fract(p4) - 0.5;
         float d4 = length(f4);
-        float b4 = exp(-d4 * d4 * 25.0) * lensing * 1.2;
-        vec3 starCol = rnd4 > 0.96 ? vec3(1.0, 0.7, 0.5) : vec3(0.75, 0.85, 1.0);
+        float b4 = exp(-d4 * d4 * 40.0) * lensing * 1.1;  // Sharper
+        vec3 starCol = rnd4 > 0.94 ? vec3(1.0, 0.7, 0.5) : vec3(0.75, 0.85, 1.0);
         col += starCol * b4;
     }
 
-    return col * 0.5;  // Brighter overall
+    // Layer 5: Rare bright giants
+    vec3 p5 = dir * 120.0;
+    vec3 id5 = floor(p5);
+    float rnd5 = hash3(id5 + 150.0);
+    if (rnd5 > 0.95) {
+        vec3 f5 = fract(p5) - 0.5;
+        float d5 = length(f5);
+        float b5 = exp(-d5 * d5 * 30.0) * lensing * 1.4;
+        vec3 starCol = rnd5 > 0.975 ? vec3(1.0, 0.6, 0.4) : vec3(0.7, 0.8, 1.0);
+        col += starCol * b5;
+    }
+
+    return col * 0.55;  // Slightly brighter
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -380,24 +392,19 @@ void main() {
             break;
         }
 
-        // ═══ EARLY RAY TERMINATION (Aggressive) ═══
-        // Ray escaping: moving away from BH
-        float radialVel = dot(normalize(pos), vel);
-        if (r > 20.0 && radialVel > 0.2) {
-            break;  // Escaping, exit early
-        }
-        // Very far and any outward motion
-        if (r > 40.0 && radialVel > 0.0) {
-            break;
-        }
-
         // Opacity saturated
         if (transmission < 0.01) break;
+
+        // Early termination - only after ray has approached BH
+        if (minR < 30.0) {
+            float radialVel = dot(normalize(pos), vel);
+            if (r > 50.0 && radialVel > 0.2) break;
+        }
 
         // Gravitational acceleration
         vec3 accel = blackHoleAccel(pos);
 
-        // ═══ MAXIMUM ADAPTIVE STEPPING ═══
+        // ═══ ADAPTIVE STEPPING (optimized for extended range) ═══
         float h = STEP_SIZE;
         if (r < PHOTON_SPHERE + 0.3) {
             h *= 0.2;   // Fine near photon sphere
@@ -405,10 +412,14 @@ void main() {
             h *= 0.5;   // Medium in strong field
         } else if (r < 12.0) {
             h *= 1.0;   // Normal near disk
-        } else if (r < 25.0) {
+        } else if (r < 20.0) {
+            h *= 1.5;   // Slightly coarse
+        } else if (r < 35.0) {
             h *= 2.5;   // Coarse
+        } else if (r < 60.0) {
+            h *= 4.0;   // Very coarse
         } else {
-            h *= 5.0;   // Very coarse far field
+            h *= 6.0;   // Ultra coarse far field
         }
 
         // Leapfrog integration
@@ -454,8 +465,8 @@ void main() {
         pos = newPos;
         vel = newVel;
 
-        // Escaped
-        if (r > 55.0) break;
+        // Escaped - only after approaching the BH
+        if (r > 120.0 && minR < 40.0) break;
     }
 
     // ═══════════════════════════════════════════════════════════════════════
