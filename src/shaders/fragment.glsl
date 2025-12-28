@@ -110,33 +110,23 @@ float keplerOmega(float r) {
     return sqrt(M / (r * r * r));
 }
 
-// Interstellar-style color palette
-// Warm gold/orange tones - NOT standard blackbody
-// Reference: DNEG toned down the physics for cinematic appeal
+// Interstellar-inspired color palette
 vec3 interstellarDiskColor(float temp) {
-    // temp ranges roughly 0.0 (cold outer) to 1.5+ (hot inner)
     float t = clamp(temp, 0.0, 2.0);
 
-    // Target palette (from plan):
-    // Inner:  rgb(255, 220, 180) / 255 = (1.0, 0.86, 0.71) - bright warm white
-    // Mid:    rgb(255, 170, 80)  / 255 = (1.0, 0.67, 0.31) - golden orange
-    // Outer:  rgb(255, 130, 50)  / 255 = (1.0, 0.51, 0.20) - deep orange
-
-    vec3 coldColor = vec3(1.0, 0.45, 0.12);    // Deep orange-red (outer disk)
-    vec3 warmColor = vec3(1.0, 0.65, 0.25);    // Golden orange (mid disk)
-    vec3 hotColor  = vec3(1.0, 0.85, 0.55);    // Warm white-gold (inner disk)
-    vec3 veryHot   = vec3(1.0, 0.92, 0.75);    // Bright warm white (ISCO)
+    // Warm orange-gold palette matching Interstellar
+    vec3 outerColor = vec3(0.9, 0.35, 0.08);   // Deep orange (outer edge)
+    vec3 midColor   = vec3(1.0, 0.55, 0.12);   // Warm orange
+    vec3 hotColor   = vec3(1.0, 0.75, 0.3);    // Golden
+    vec3 veryHot    = vec3(1.0, 0.9, 0.6);     // Warm white-gold
 
     vec3 col;
     if (t < 0.5) {
-        // Outer disk: deep orange
-        col = mix(coldColor, warmColor, t * 2.0);
+        col = mix(outerColor, midColor, t * 2.0);
     } else if (t < 1.0) {
-        // Mid disk: golden orange to warm gold
-        col = mix(warmColor, hotColor, (t - 0.5) * 2.0);
+        col = mix(midColor, hotColor, (t - 0.5) * 2.0);
     } else {
-        // Inner disk: warm gold to bright warm white
-        col = mix(hotColor, veryHot, min((t - 1.0), 1.0));
+        col = mix(hotColor, veryHot, min(t - 1.0, 1.0));
     }
 
     return col;
@@ -240,14 +230,21 @@ vec4 sampleDisk(vec3 p, vec3 rayDir, float time, int crossingNum) {
     float dopplerFac = 1.0;
     if (uDoppler > 0.5) {
         float vOrb = min(sqrt(M / r), 0.45);
-        float vLos = dot(normalize(vec3(-p.z, 0.0, p.x)), rayDir) * vOrb;
-        float g = clamp(1.0 / (1.0 - vLos), 0.5, 2.0);
-        dopplerFac = g * g;
-        temp *= clamp(g, 0.75, 1.3);
+        vec3 velDir = normalize(vec3(-p.z, 0.0, p.x));
+        float vLos = dot(velDir, rayDir) * vOrb;
+
+        // Relativistic Doppler factor
+        float g = clamp(1.0 / (1.0 - vLos), 0.4, 2.5);
+
+        // Brightness asymmetry
+        dopplerFac = pow(g, 2.0);
+
+        // Temperature shift
+        temp *= clamp(g, 0.7, 1.4);
     }
 
     // ═══ REDSHIFT ═══
-    float gravFac = uRedshift > 0.5 ? sqrt(max(0.25, 1.0 - RS / r)) : 1.0;
+    float gravFac = uRedshift > 0.5 ? sqrt(max(0.2, 1.0 - RS / r)) : 1.0;
 
     // ═══ EMISSION COLOR ═══
     vec3 emission = interstellarDiskColor(temp * gravFac);
@@ -470,38 +467,53 @@ void main() {
     }
 
     // ═══════════════════════════════════════════════════════════════════════
-    // PHOTON RING - Animated with flowing motion
+    // PHOTON RING - Dramatic multi-layered with animation
     // ═══════════════════════════════════════════════════════════════════════
 
     // Get angle around the black hole for ring animation
     float ringAngle = atan(vel.z, vel.x);
 
-    // Flowing hot spots around the ring (orbiting light)
-    float ringFlow1 = sin(ringAngle * 3.0 - uTime * 1.2) * 0.5 + 0.5;
-    float ringFlow2 = sin(ringAngle * 5.0 + uTime * 0.8) * 0.5 + 0.5;
-    float ringFlow = 0.7 + 0.3 * ringFlow1 * ringFlow2;
+    // Flowing hot spots - more dramatic variation
+    float ringFlow1 = sin(ringAngle * 3.0 - uTime * 1.5) * 0.5 + 0.5;
+    float ringFlow2 = sin(ringAngle * 7.0 + uTime * 1.0) * 0.5 + 0.5;
+    float ringFlow3 = sin(ringAngle * 2.0 - uTime * 0.6) * 0.5 + 0.5;
+    float ringFlow = 0.5 + 0.5 * ringFlow1 * ringFlow2 * (0.7 + 0.3 * ringFlow3);
 
-    // Pulsating brightness variations
-    float ringPulse = 0.85 + 0.15 * sin(uTime * 2.0 + ringAngle * 2.0);
+    // Pulsating brightness
+    float ringPulse = 0.8 + 0.2 * sin(uTime * 2.5 + ringAngle * 3.0);
 
-    // Primary photon ring - wide glow
+    // Outer glow - soft wide halo
+    float ring0Dist = abs(minR - PHOTON_SPHERE * 1.05);
+    float ring0 = exp(-ring0Dist * ring0Dist * 4.0) * 0.4;
+
+    // Primary photon ring - main visible ring
     float ring1Dist = abs(minR - PHOTON_SPHERE);
-    float ring1 = exp(-ring1Dist * ring1Dist * 8.0) * 0.75;
+    float ring1 = exp(-ring1Dist * ring1Dist * 10.0) * 0.9;
 
-    // Secondary ring - tighter, brighter
+    // Secondary ring - tighter
     float ring2Dist = abs(minR - PHOTON_SPHERE * 0.96);
-    float ring2 = exp(-ring2Dist * ring2Dist * 25.0) * 0.55;
+    float ring2 = exp(-ring2Dist * ring2Dist * 30.0) * 0.7;
 
-    // Tertiary ring - sharp inner edge
-    float ring3Dist = abs(minR - PHOTON_SPHERE * 0.92);
-    float ring3 = exp(-ring3Dist * ring3Dist * 50.0) * 0.4;
+    // Tertiary ring - sharp
+    float ring3Dist = abs(minR - PHOTON_SPHERE * 0.93);
+    float ring3 = exp(-ring3Dist * ring3Dist * 60.0) * 0.5;
 
-    float totalRing = (ring1 + ring2 + ring3) * ringFlow * ringPulse;
+    // Inner bright edge
+    float ring4Dist = abs(minR - PHOTON_SPHERE * 0.90);
+    float ring4 = exp(-ring4Dist * ring4Dist * 100.0) * 0.4;
 
-    // Enhanced ring color with slight variation
-    float colorShift = sin(ringAngle * 2.0 - uTime * 0.5) * 0.1;
-    vec3 ringColor = vec3(1.0, 0.8 + colorShift, 0.5 - colorShift * 0.5);
-    col += ringColor * totalRing * transmission * 1.2;
+    float totalRing = (ring0 + ring1 + ring2 + ring3 + ring4) * ringFlow * ringPulse;
+
+    // Rich color gradient around the ring
+    float colorPhase = ringAngle * 0.5 - uTime * 0.4;
+    vec3 ringColor1 = vec3(1.0, 0.85, 0.5);   // Golden
+    vec3 ringColor2 = vec3(1.0, 0.7, 0.35);   // Orange-gold
+    vec3 ringColor = mix(ringColor1, ringColor2, sin(colorPhase) * 0.5 + 0.5);
+
+    // Add brightness boost near the disk plane
+    float diskPlaneBoost = 1.0 + 0.5 * exp(-vel.y * vel.y * 20.0);
+
+    col += ringColor * totalRing * transmission * 1.5 * diskPlaneBoost;
 
     // Lensing amplification glow - animated
     float lensingGlow = exp(-minPhotonDist * minPhotonDist * 0.5) * 0.3;
@@ -521,34 +533,36 @@ void main() {
     }
 
     // ═══════════════════════════════════════════════════════════════════════
-    // POST-PROCESSING - Higher contrast, reduced exposure
+    // POST-PROCESSING - Cinematic film look
     // ═══════════════════════════════════════════════════════════════════════
 
-    // Single luminance calc, tighter bloom
+    // Multi-level bloom for cinematic glow
     float lum = dot(col, vec3(0.299, 0.587, 0.114));
-    col *= 1.0 + smoothstep(0.4, 1.0, lum) * 0.4;  // Less bloom, higher threshold
+    float softBloom = smoothstep(0.2, 0.8, lum) * 0.35;   // Soft overall glow
+    float hotBloom = smoothstep(0.6, 1.2, lum) * 0.5;     // Hot highlights
+    col *= 1.0 + softBloom + hotBloom;
 
-    // Tone mapping - reduced exposure (0.5 -> 0.4)
-    col *= 0.4;
+    // ACES filmic tone mapping with adjusted exposure
+    col *= 0.45;
     col = clamp((col * (2.51 * col + 0.03)) / (col * (2.43 * col + 0.59) + 0.14), 0.0, 1.0);
-    col = pow(col, vec3(0.4545));  // 1/2.2
+    col = pow(col, vec3(0.4545));  // Gamma 2.2
 
-    // Color grade: warm amber, reduce blues
-    col *= vec3(1.05, 0.97, 0.85);
+    // Subtle warm color grade
+    col.r *= 1.03;
+    col.g *= 1.0;
+    col.b *= 0.94;
 
-    // Stronger S-curve for more contrast
-    col = col * col * (3.0 - 2.0 * col);  // First pass
-    col = mix(col, col * col * (3.0 - 2.0 * col), 0.3);  // Subtle second pass
-
-    // Highlight desaturation (reuse lum calculation with new col)
+    // Gentle contrast enhancement
     float lumFinal = dot(col, vec3(0.299, 0.587, 0.114));
-    col = mix(col, vec3(lumFinal), smoothstep(0.6, 1.0, lumFinal) * 0.15);
+    col = mix(col, col * col * (3.0 - 2.0 * col), 0.3);
 
-    // Vignette
-    col *= 1.0 - 0.3 * pow(length(uv * 0.8), 2.5);
+    // Vignette - slightly stronger
+    float vigDist = length(uv * 0.75);
+    col *= 1.0 - 0.4 * pow(vigDist, 2.8);
 
-    // Single-layer grain (was 2)
-    col += (hash2(uv * 500.0 + fract(uTime * 0.4)) - 0.5) * 0.018;
+    // Film grain (organic, subtle)
+    float grain = (hash2(uv * 600.0 + fract(uTime * 0.5)) - 0.5);
+    col += grain * 0.022 * (1.0 - lumFinal * 0.5);  // Less grain in highlights
 
     // Ensure blacks stay black
     col = max(col, vec3(0.0));

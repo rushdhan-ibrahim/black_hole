@@ -269,9 +269,8 @@ export class GargantuaRenderer {
     }
 
     resize() {
-        // Resolution scale for performance (0.85 = 85% resolution)
-        const resolutionScale = 0.85;
-        const dpr = Math.min(window.devicePixelRatio, 1.0) * resolutionScale;
+        // Balanced DPR - 1.25 for improved sharpness without FPS hit
+        const dpr = Math.min(window.devicePixelRatio, 1.25);
         this.canvas.width = Math.floor(window.innerWidth * dpr);
         this.canvas.height = Math.floor(window.innerHeight * dpr);
         this.gl.viewport(0, 0, this.canvas.width, this.canvas.height);
