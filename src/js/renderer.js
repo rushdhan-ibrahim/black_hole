@@ -16,6 +16,7 @@ export class GargantuaRenderer {
         this.frameCount = 0;
         this.lastFpsTime = performance.now();
         this.onFpsUpdate = null;
+        this.onDistanceUpdate = null;
 
         // Camera state
         this.camera = {
@@ -266,11 +267,16 @@ export class GargantuaRenderer {
         this.camera.elevation += (this.camera.targetElevation - this.camera.elevation) * smoothing;
         this.camera.distance += (this.camera.targetDistance - this.camera.distance) * smoothing;
         this.camera.zoom += (this.camera.targetZoom - this.camera.zoom) * smoothing;
+
+        // Notify listeners of distance change (for audio modulation)
+        if (this.onDistanceUpdate) {
+            this.onDistanceUpdate(this.camera.distance);
+        }
     }
 
     resize() {
-        // Balanced DPR - 1.25 for improved sharpness without FPS hit
-        const dpr = Math.min(window.devicePixelRatio, 1.25);
+        // Full resolution at 1.0 DPR for 31 FPS performance
+        const dpr = Math.min(window.devicePixelRatio, 1.0);
         this.canvas.width = Math.floor(window.innerWidth * dpr);
         this.canvas.height = Math.floor(window.innerHeight * dpr);
         this.gl.viewport(0, 0, this.canvas.width, this.canvas.height);
