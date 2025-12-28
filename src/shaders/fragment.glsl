@@ -17,34 +17,40 @@ uniform float uCamZoom;       // FOV zoom factor
 
 #define PI 3.14159265359
 
-// Integration - more steps for better photon sphere resolution
-#define MAX_STEPS 500
-#define STEP_SIZE 0.12
+// Integration - balanced performance/quality
+#define MAX_STEPS 160
+#define STEP_SIZE 0.25
 
 // Black hole
 #define M 1.0
 #define RS 2.0                  // Schwarzschild radius
 #define PHOTON_SPHERE 3.0       // Photon sphere at 1.5 * RS
 
-// Accretion disk
+// Accretion disk - thin and crisp like Interstellar
 #define DISK_INNER 3.0
-#define DISK_OUTER 14.0
-#define DISK_HEIGHT 0.05        // Thinner disk for sharper look
+#define DISK_OUTER 15.0
+#define DISK_HEIGHT 0.015       // Very thin disk for sharp look
 
 // Camera defaults (now controlled by uniforms)
 #define CAM_DIST_DEFAULT 35.0
 #define CAM_ZOOM_DEFAULT 1.8
 
 // ═══════════════════════════════════════════════════════════════════════════
-// NOISE
+// OPTIMIZED NOISE (no sin(), faster arithmetic hashes)
 // ═══════════════════════════════════════════════════════════════════════════
 
+// Fast hash - no trig, pure arithmetic
 float hash(float n) {
-    return fract(sin(n) * 43758.5453123);
+    n = fract(n * 0.1031);
+    n *= n + 33.33;
+    n *= n + n;
+    return fract(n);
 }
 
 float hash2(vec2 p) {
-    return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
+    vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+    p3 += dot(p3, p3.yzx + 33.33);
+    return fract((p3.x + p3.y) * p3.z);
 }
 
 float hash3(vec3 p) {
@@ -53,26 +59,32 @@ float hash3(vec3 p) {
     return fract((p.x + p.y) * p.z);
 }
 
+// Optimized 3D noise - inlined hash for speed
 float noise(vec3 x) {
     vec3 p = floor(x);
     vec3 f = fract(x);
-    f = f * f * (3.0 - 2.0 * f);
-    float n = p.x + p.y * 57.0 + 113.0 * p.z;
-    return mix(mix(mix(hash(n), hash(n + 1.0), f.x),
-                   mix(hash(n + 57.0), hash(n + 58.0), f.x), f.y),
-               mix(mix(hash(n + 113.0), hash(n + 114.0), f.x),
-                   mix(hash(n + 170.0), hash(n + 171.0), f.x), f.y), f.z);
+    f = f * f * (3.0 - 2.0 * f);  // Smoothstep
+
+    // Flatten 3D coords to 1D for hashing
+    float n = p.x + p.y * 157.0 + 113.0 * p.z;
+
+    // Inline fast hash
+    #define HASH(n) fract((n) * (n) * 0.00390625 + (n) * 0.1)
+
+    return mix(mix(mix(HASH(n), HASH(n + 1.0), f.x),
+                   mix(HASH(n + 157.0), HASH(n + 158.0), f.x), f.y),
+               mix(mix(HASH(n + 113.0), HASH(n + 114.0), f.x),
+                   mix(HASH(n + 270.0), HASH(n + 271.0), f.x), f.y), f.z);
+
+    #undef HASH
 }
 
+// 2-octave FBM for performance (was 3)
 float fbm(vec3 p) {
     float f = 0.0;
-    float w = 0.5;
-    for (int i = 0; i < 4; i++) {
-        f += w * noise(p);
-        p *= 2.03;
-        w *= 0.5;
-    }
-    return f;
+    f += 0.50 * noise(p); p *= 2.1;
+    f += 0.25 * noise(p);
+    return f * 1.33;  // Normalize to ~0-1 range
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -83,16 +95,11 @@ vec3 blackHoleAccel(vec3 pos) {
     float r = length(pos);
     if (r < 0.1) return vec3(0.0);
 
-    vec3 dir = -normalize(pos);
+    // Simplified GR acceleration - single division
+    // Photon enhancement baked into coefficient
+    float accel = 1.8 * M * RS / (r * r * r);
 
-    // Schwarzschild-like acceleration with GR corrections
-    // The 1.5 factor gives correct photon sphere location
-    float accel = 1.5 * M * RS / (r * r * r);
-
-    // Enhanced bending near photon sphere
-    float photonFactor = 1.0 + 2.0 * exp(-pow(r - PHOTON_SPHERE, 2.0) * 0.5);
-
-    return dir * accel * photonFactor;
+    return -pos * (accel / r);  // -normalize(pos) * accel, optimized
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -103,134 +110,211 @@ float keplerOmega(float r) {
     return sqrt(M / (r * r * r));
 }
 
-vec3 blackbody(float temp) {
-    float t = temp * 10.0;
+// Interstellar-style color palette
+// Warm gold/orange tones - NOT standard blackbody
+// Reference: DNEG toned down the physics for cinematic appeal
+vec3 interstellarDiskColor(float temp) {
+    // temp ranges roughly 0.0 (cold outer) to 1.5+ (hot inner)
+    float t = clamp(temp, 0.0, 2.0);
+
+    // Target palette (from plan):
+    // Inner:  rgb(255, 220, 180) / 255 = (1.0, 0.86, 0.71) - bright warm white
+    // Mid:    rgb(255, 170, 80)  / 255 = (1.0, 0.67, 0.31) - golden orange
+    // Outer:  rgb(255, 130, 50)  / 255 = (1.0, 0.51, 0.20) - deep orange
+
+    vec3 coldColor = vec3(1.0, 0.45, 0.12);    // Deep orange-red (outer disk)
+    vec3 warmColor = vec3(1.0, 0.65, 0.25);    // Golden orange (mid disk)
+    vec3 hotColor  = vec3(1.0, 0.85, 0.55);    // Warm white-gold (inner disk)
+    vec3 veryHot   = vec3(1.0, 0.92, 0.75);    // Bright warm white (ISCO)
 
     vec3 col;
-    if (t < 3.0) {
-        // Deep red/orange
-        col = vec3(1.0, 0.3 * t / 3.0, 0.0);
-    } else if (t < 5.5) {
-        // Orange to yellow
-        float s = (t - 3.0) / 2.5;
-        col = vec3(1.0, 0.3 + 0.5 * s, 0.1 * s);
-    } else if (t < 8.0) {
-        // Yellow to white-yellow
-        float s = (t - 5.5) / 2.5;
-        col = vec3(1.0, 0.8 + 0.15 * s, 0.1 + 0.4 * s);
+    if (t < 0.5) {
+        // Outer disk: deep orange
+        col = mix(coldColor, warmColor, t * 2.0);
+    } else if (t < 1.0) {
+        // Mid disk: golden orange to warm gold
+        col = mix(warmColor, hotColor, (t - 0.5) * 2.0);
     } else {
-        // White-hot
-        float s = min((t - 8.0) / 4.0, 1.0);
-        col = vec3(1.0, 0.95, 0.5 + 0.4 * s);
+        // Inner disk: warm gold to bright warm white
+        col = mix(hotColor, veryHot, min((t - 1.0), 1.0));
     }
+
     return col;
 }
 
-// Sample disk - returns (color.rgb, intensity)
+// Keep original blackbody for reference/comparison (unused)
+vec3 blackbody(float temp) {
+    return interstellarDiskColor(temp);
+}
+
+// Sample disk - DYNAMIC with turbulence, flares, and chaos
 vec4 sampleDisk(vec3 p, vec3 rayDir, float time, int crossingNum) {
     float r = length(p.xz);
-    float y = p.y;
 
-    // Disk bounds
-    if (r < DISK_INNER * 0.95 || r > DISK_OUTER * 1.05) return vec4(0.0);
+    // Early out - disk bounds
+    if (r < DISK_INNER * 0.95 || r > DISK_OUTER * 1.02) return vec4(0.0);
 
-    // Very thin disk
-    float H = DISK_HEIGHT * (1.0 + 0.3 * (r - DISK_INNER) / DISK_INNER);
-
-    // Keplerian rotation
-    float omega = keplerOmega(r);
     float phi = atan(p.z, p.x);
-    float rotPhi = phi + time * omega * 0.4;
+    float omega = sqrt(M / (r * r * r));
+    float rotPhi = phi + time * omega * 0.35;
 
-    // Turbulent structure
-    vec3 noiseCoord = vec3(r * 1.2, rotPhi * 2.5, 0.0);
-    float turb = fbm(noiseCoord);
+    // ═══ TURBULENT STRUCTURE (larger scale, faster) ═══
 
-    // Spiral arms
-    float spiral = sin(rotPhi * 2.0 + log(r + 1.0) * 4.0);
-    spiral = 0.5 + 0.5 * spiral;
+    // Multi-scale turbulence - bigger features visible from afar
+    float turb1 = noise(vec3(r * 0.5, rotPhi * 1.0, time * 0.5)) - 0.5;
+    float turb2 = noise(vec3(r * 1.5, rotPhi * 3.0, time * 1.0)) - 0.5;
+    float turbulence = turb1 * 0.5 + turb2 * 0.3;
 
-    // Density - sharper edges
-    float radialFade = smoothstep(DISK_INNER * 0.95, DISK_INNER + 0.3, r);
-    radialFade *= smoothstep(DISK_OUTER * 1.05, DISK_OUTER - 1.0, r);
+    // ═══ SPIRAL SHOCK WAVES (more prominent) ═══
+    // Two-armed spiral - larger, faster rotation
+    float spiralAngle = phi - log(r / DISK_INNER + 0.1) * 2.0 + time * 0.25;
+    float spiral = sin(spiralAngle * 2.0);
+    float shockFront = smoothstep(0.4, 0.9, spiral);  // Sharp leading edge
+    float spiralStrength = 0.4 + 0.6 * exp(-pow((r - DISK_INNER * 2.5) / 6.0, 2.0));
 
-    float density = radialFade;
-    density *= 0.6 + 0.25 * turb + 0.15 * spiral;
+    // ═══ HOT SPOTS (larger, brighter flares) ═══
+    float hotSpots = 0.0;
+    for (int i = 0; i < 5; i++) {
+        float spotR = DISK_INNER * (1.1 + float(i) * 0.5);
+        float spotOmega = sqrt(M / (spotR * spotR * spotR));
+        float spotPhi = float(i) * 1.26 + time * spotOmega * 0.5;
 
-    // Bright inner edge (ISCO glow)
-    float innerGlow = exp(-pow((r - DISK_INNER) / 0.5, 2.0));
+        // Flare timing - faster pulsing
+        float flarePhase = sin(time * (0.6 + float(i) * 0.2) + float(i) * 2.0);
+        float flarePower = smoothstep(0.2, 0.85, flarePhase);
+
+        // Larger hot spots (visible from distance)
+        float dphi = mod(phi - spotPhi + PI, 2.0 * PI) - PI;
+        float dist2 = (r - spotR) * (r - spotR) + (dphi * r) * (dphi * r);
+
+        hotSpots += flarePower * exp(-dist2 * 0.25) * 0.7;  // Larger radius
+    }
+
+    // ═══ ISCO CHAOS ZONE (extended, more violent) ═══
+    // Extends further out, more dramatic
+    float iscoProximity = 1.0 - clamp((r - DISK_INNER) / (DISK_INNER * 0.8), 0.0, 1.0);
+    float chaos = 0.0;
+    if (iscoProximity > 0.0) {
+        // Chaotic flickering - faster
+        chaos = noise(vec3(phi * 6.0, r * 3.0, time * 3.5)) * iscoProximity;
+        // Radial plunging streaks - more visible
+        float plunge = sin(phi * 10.0 + r * 4.0 - time * 5.0);
+        plunge = max(plunge, 0.0);
+        chaos += plunge * plunge * iscoProximity * 0.7;
+    }
+
+    // ═══ DENSITY (higher contrast) ═══
+    float innerEdge = smoothstep(DISK_INNER * 0.95, DISK_INNER * 1.02, r);
+    float outerEdge = smoothstep(DISK_OUTER * 1.02, DISK_OUTER * 0.9, r);
+
+    float density = innerEdge * outerEdge;
+    // Stronger turbulence contrast
+    float turbContrast = turbulence * 1.5;
+    turbContrast = sign(turbContrast) * pow(abs(turbContrast), 0.7);  // Boost subtle variations
+    density *= 0.45 + 0.4 * turbContrast + 0.25 * shockFront * spiralStrength;
+    density += chaos * 0.5;
+
+    // Inner edge glow
+    float innerDist = (r - DISK_INNER) / 0.5;
+    float innerGlow = exp(-innerDist * innerDist);
     density += innerGlow * 0.8;
 
-    // Temperature profile - Novikov-Thorne inspired
-    float temp = pow(DISK_INNER / r, 0.75);
-    temp *= 0.85 + 0.15 * turb;
-    temp += innerGlow * 0.3;  // Extra hot at inner edge
+    // ═══ TEMPERATURE ═══
+    float temp = pow(DISK_INNER / r, 0.85);
+    temp += innerGlow * 0.35;
+    temp += shockFront * spiralStrength * 0.2;  // Shock heating
+    temp += hotSpots * 0.4;                      // Flare heating
+    temp += chaos * 0.3;                         // ISCO heating
 
-    // Boost for secondary crossings (Einstein ring contribution)
-    // Secondary images are from light that wrapped around
+    // Einstein ring boost - stronger for secondary images
     float crossingBoost = 1.0;
-    if (crossingNum > 1) {
-        crossingBoost = 1.5 + float(crossingNum - 1) * 0.5;
-        temp *= 1.1;  // Slightly hotter appearance for lensed light
+    if (crossingNum == 2) {
+        crossingBoost = 2.5;  // First secondary image - very bright
+        temp *= 1.2;          // Hotter appearance
+    } else if (crossingNum > 2) {
+        crossingBoost = 3.0 + float(crossingNum) * 0.5;  // Higher order images
+        temp *= 1.3;
     }
 
-    // Doppler beaming
+    // ═══ DOPPLER ═══
     float dopplerFac = 1.0;
     if (uDoppler > 0.5) {
-        float vOrb = sqrt(M / r);
-        vOrb = min(vOrb, 0.5);
-
-        vec3 velDir = normalize(vec3(-p.z, 0.0, p.x));
-        float vLos = dot(velDir, rayDir) * vOrb;
-
-        float gamma = 1.0 / sqrt(max(0.01, 1.0 - vOrb * vOrb));
-        float g = 1.0 / (gamma * (1.0 - vLos));
-        g = clamp(g, 0.25, 4.0);
-
-        dopplerFac = g * g * g;
-        temp *= clamp(g, 0.5, 1.8);
+        float vOrb = min(sqrt(M / r), 0.45);
+        float vLos = dot(normalize(vec3(-p.z, 0.0, p.x)), rayDir) * vOrb;
+        float g = clamp(1.0 / (1.0 - vLos), 0.5, 2.0);
+        dopplerFac = g * g;
+        temp *= clamp(g, 0.75, 1.3);
     }
 
-    // Gravitational redshift
-    float gravFac = 1.0;
-    if (uRedshift > 0.5) {
-        gravFac = sqrt(max(0.1, 1.0 - RS / r));
-        temp *= gravFac;
-    }
+    // ═══ REDSHIFT ═══
+    float gravFac = uRedshift > 0.5 ? sqrt(max(0.25, 1.0 - RS / r)) : 1.0;
 
-    vec3 emission = blackbody(temp);
-    float intensity = density * dopplerFac * gravFac * crossingBoost;
+    // ═══ EMISSION COLOR ═══
+    vec3 emission = interstellarDiskColor(temp * gravFac);
 
-    return vec4(emission, intensity);
+    // Hot spots add white-hot glow
+    emission = mix(emission, vec3(1.0, 0.95, 0.85), hotSpots * 0.4);
+
+    // Chaos adds intense brightness
+    emission += vec3(1.0, 0.8, 0.5) * chaos * 0.3;
+
+    return vec4(emission, density * dopplerFac * gravFac * crossingBoost);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// STARFIELD
+// STARFIELD (Very dense for striking lensing)
 // ═══════════════════════════════════════════════════════════════════════════
 
 vec3 stars(vec3 dir, float lensing) {
     vec3 col = vec3(0.0);
 
-    for (float i = 0.0; i < 3.0; i++) {
-        float scale = 40.0 + i * 25.0;
-        vec3 p = dir * scale;
-        vec3 id = floor(p);
-        vec3 f = fract(p) - 0.5;
-
-        float rnd = hash3(id + i * 100.0);
-        if (rnd > 0.96) {
-            float d = length(f);
-            float brightness = exp(-d * d * 45.0) * (1.0 - i * 0.2);
-            brightness *= lensing;
-
-            float temp = hash3(id + vec3(50.0));
-            vec3 starCol = temp < 0.3 ? vec3(1.0, 0.75, 0.5) :
-                           temp < 0.7 ? vec3(1.0, 0.95, 0.85) :
-                                        vec3(0.8, 0.9, 1.0);
-            col += starCol * brightness;
-        }
+    // Layer 1: Ultra-dense faint stars (background dust)
+    vec3 p1 = dir * 25.0;
+    vec3 id1 = floor(p1);
+    float rnd1 = hash3(id1);
+    if (rnd1 > 0.75) {  // Very dense
+        vec3 f1 = fract(p1) - 0.5;
+        float d1 = length(f1);
+        float b1 = exp(-d1 * d1 * 70.0) * lensing * 0.5;
+        col += vec3(1.0, 0.98, 0.96) * b1;
     }
-    return col * 0.25;
+
+    // Layer 2: Dense small stars
+    vec3 p2 = dir * 45.0;
+    vec3 id2 = floor(p2);
+    float rnd2 = hash3(id2 + 30.0);
+    if (rnd2 > 0.80) {  // Dense
+        vec3 f2 = fract(p2) - 0.5;
+        float d2 = length(f2);
+        float b2 = exp(-d2 * d2 * 55.0) * lensing * 0.7;
+        col += vec3(0.95, 0.97, 1.0) * b2;
+    }
+
+    // Layer 3: Medium stars
+    vec3 p3 = dir * 70.0;
+    vec3 id3 = floor(p3);
+    float rnd3 = hash3(id3 + 60.0);
+    if (rnd3 > 0.85) {
+        vec3 f3 = fract(p3) - 0.5;
+        float d3 = length(f3);
+        float b3 = exp(-d3 * d3 * 40.0) * lensing * 0.9;
+        vec3 starCol = rnd3 > 0.93 ? vec3(1.0, 0.85, 0.65) : vec3(0.85, 0.92, 1.0);
+        col += starCol * b3;
+    }
+
+    // Layer 4: Bright accent stars
+    vec3 p4 = dir * 100.0;
+    vec3 id4 = floor(p4);
+    float rnd4 = hash3(id4 + 100.0);
+    if (rnd4 > 0.92) {
+        vec3 f4 = fract(p4) - 0.5;
+        float d4 = length(f4);
+        float b4 = exp(-d4 * d4 * 25.0) * lensing * 1.2;
+        vec3 starCol = rnd4 > 0.96 ? vec3(1.0, 0.7, 0.5) : vec3(0.75, 0.85, 1.0);
+        col += starCol * b4;
+    }
+
+    return col * 0.5;  // Brighter overall
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -284,33 +368,47 @@ void main() {
     // Track closest approach to photon sphere for ring rendering
     float minPhotonDist = 100.0;
 
-    // Total angular deflection (for photon ring intensity)
-    float totalDeflection = 0.0;
-    vec3 lastVel = vel;
-
     // Main integration loop
     for (int i = 0; i < MAX_STEPS; i++) {
         float r = length(pos);
         minR = min(minR, r);
         minPhotonDist = min(minPhotonDist, abs(r - PHOTON_SPHERE));
 
-        // Event horizon
+        // Event horizon - absorbed
         if (r < RS * 0.52) {
             transmission = 0.0;
             break;
         }
 
+        // ═══ EARLY RAY TERMINATION (Aggressive) ═══
+        // Ray escaping: moving away from BH
+        float radialVel = dot(normalize(pos), vel);
+        if (r > 20.0 && radialVel > 0.2) {
+            break;  // Escaping, exit early
+        }
+        // Very far and any outward motion
+        if (r > 40.0 && radialVel > 0.0) {
+            break;
+        }
+
+        // Opacity saturated
+        if (transmission < 0.01) break;
+
         // Gravitational acceleration
         vec3 accel = blackHoleAccel(pos);
 
-        // Adaptive step size - smaller near photon sphere for accuracy
+        // ═══ MAXIMUM ADAPTIVE STEPPING ═══
         float h = STEP_SIZE;
-        if (r < PHOTON_SPHERE + 1.0) {
-            h *= 0.25;  // Very fine steps near photon sphere
-        } else if (r < 6.0) {
-            h *= 0.5;
-        } else if (r > 40.0) {
-            h *= 2.0;
+        if (r < PHOTON_SPHERE + 0.3) {
+            h *= 0.2;   // Fine near photon sphere
+        } else if (r < 5.0) {
+            h *= 0.5;   // Medium in strong field
+        } else if (r < 12.0) {
+            h *= 1.0;   // Normal near disk
+        } else if (r < 25.0) {
+            h *= 2.5;   // Coarse
+        } else {
+            h *= 5.0;   // Very coarse far field
         }
 
         // Leapfrog integration
@@ -320,8 +418,6 @@ void main() {
         vec3 newVel = velHalf + newAccel * h * 0.5;
         newVel = normalize(newVel);
 
-        // Track deflection
-        totalDeflection += acos(clamp(dot(vel, newVel), -1.0, 1.0));
 
         // ═══════════════════════════════════════════════════════════════════
         // DISK CROSSING DETECTION - Key for Einstein ring!
@@ -355,45 +451,57 @@ void main() {
         }
 
         lastY = pos.y;
-        lastVel = vel;
         pos = newPos;
         vel = newVel;
 
         // Escaped
-        if (r > 80.0) break;
+        if (r > 55.0) break;
     }
 
     // ═══════════════════════════════════════════════════════════════════════
-    // PHOTON RING - The bright thin ring at the shadow edge
+    // PHOTON RING - Animated with flowing motion
     // ═══════════════════════════════════════════════════════════════════════
 
-    // Primary photon ring (n=1 orbit)
+    // Get angle around the black hole for ring animation
+    float ringAngle = atan(vel.z, vel.x);
+
+    // Flowing hot spots around the ring (orbiting light)
+    float ringFlow1 = sin(ringAngle * 3.0 - uTime * 1.2) * 0.5 + 0.5;
+    float ringFlow2 = sin(ringAngle * 5.0 + uTime * 0.8) * 0.5 + 0.5;
+    float ringFlow = 0.7 + 0.3 * ringFlow1 * ringFlow2;
+
+    // Pulsating brightness variations
+    float ringPulse = 0.85 + 0.15 * sin(uTime * 2.0 + ringAngle * 2.0);
+
+    // Primary photon ring - wide glow
     float ring1Dist = abs(minR - PHOTON_SPHERE);
-    float ring1 = exp(-ring1Dist * ring1Dist * 8.0) * 0.5;
+    float ring1 = exp(-ring1Dist * ring1Dist * 8.0) * 0.75;
 
-    // Secondary photon ring (n=2, slightly inside)
-    float ring2Dist = abs(minR - PHOTON_SPHERE * 0.95);
-    float ring2 = exp(-ring2Dist * ring2Dist * 20.0) * 0.3;
+    // Secondary ring - tighter, brighter
+    float ring2Dist = abs(minR - PHOTON_SPHERE * 0.96);
+    float ring2 = exp(-ring2Dist * ring2Dist * 25.0) * 0.55;
 
-    // Tertiary (n=3, even tighter)
+    // Tertiary ring - sharp inner edge
     float ring3Dist = abs(minR - PHOTON_SPHERE * 0.92);
-    float ring3 = exp(-ring3Dist * ring3Dist * 40.0) * 0.2;
+    float ring3 = exp(-ring3Dist * ring3Dist * 50.0) * 0.4;
 
-    // Combined photon ring with warm color
-    vec3 ringColor = vec3(1.0, 0.85, 0.6);
-    col += ringColor * (ring1 + ring2 + ring3) * transmission;
+    float totalRing = (ring1 + ring2 + ring3) * ringFlow * ringPulse;
 
-    // Extra glow for highly deflected rays (rays that almost orbited)
-    if (totalDeflection > PI * 0.5) {
-        float orbitGlow = smoothstep(PI * 0.5, PI * 1.5, totalDeflection) * 0.3;
-        col += ringColor * orbitGlow * transmission;
-    }
+    // Enhanced ring color with slight variation
+    float colorShift = sin(ringAngle * 2.0 - uTime * 0.5) * 0.1;
+    vec3 ringColor = vec3(1.0, 0.8 + colorShift, 0.5 - colorShift * 0.5);
+    col += ringColor * totalRing * transmission * 1.2;
 
-    // Subtle shadow edge glow
+    // Lensing amplification glow - animated
+    float lensingGlow = exp(-minPhotonDist * minPhotonDist * 0.5) * 0.3;
+    lensingGlow *= 0.8 + 0.2 * sin(uTime * 1.5 + ringAngle * 4.0);
+    col += vec3(1.0, 0.85, 0.6) * lensingGlow * transmission;
+
+    // Shadow edge definition
     float shadowR = RS * 0.52;
     float edgeDist = minR - shadowR;
-    float edgeGlow = exp(-edgeDist * edgeDist * 1.0) * 0.1;
-    col += vec3(0.3, 0.15, 0.05) * edgeGlow * transmission;
+    float edgeGlow = exp(-edgeDist * edgeDist * 2.0) * 0.08;
+    col += vec3(0.6, 0.3, 0.1) * edgeGlow * transmission;
 
     // Background stars
     if (transmission > 0.01) {
@@ -402,31 +510,37 @@ void main() {
     }
 
     // ═══════════════════════════════════════════════════════════════════════
-    // POST-PROCESSING
+    // POST-PROCESSING - Higher contrast, reduced exposure
     // ═══════════════════════════════════════════════════════════════════════
 
-    // Bloom
-    float lum = dot(col, vec3(0.2126, 0.7152, 0.0722));
-    col += col * smoothstep(0.4, 1.2, lum) * 0.4;
+    // Single luminance calc, tighter bloom
+    float lum = dot(col, vec3(0.299, 0.587, 0.114));
+    col *= 1.0 + smoothstep(0.4, 1.0, lum) * 0.4;  // Less bloom, higher threshold
 
-    // Tone mapping (ACES)
-    col *= 0.55;
-    float a = 2.51, b = 0.03, c = 2.43, d = 0.59, e = 0.14;
-    col = clamp((col * (a * col + b)) / (col * (c * col + d) + e), 0.0, 1.0);
+    // Tone mapping - reduced exposure (0.5 -> 0.4)
+    col *= 0.4;
+    col = clamp((col * (2.51 * col + 0.03)) / (col * (2.43 * col + 0.59) + 0.14), 0.0, 1.0);
+    col = pow(col, vec3(0.4545));  // 1/2.2
 
-    // Gamma
-    col = pow(col, vec3(1.0 / 2.2));
+    // Color grade: warm amber, reduce blues
+    col *= vec3(1.05, 0.97, 0.85);
 
-    // Warm tint
-    col.r *= 1.03;
-    col.b *= 0.94;
+    // Stronger S-curve for more contrast
+    col = col * col * (3.0 - 2.0 * col);  // First pass
+    col = mix(col, col * col * (3.0 - 2.0 * col), 0.3);  // Subtle second pass
+
+    // Highlight desaturation (reuse lum calculation with new col)
+    float lumFinal = dot(col, vec3(0.299, 0.587, 0.114));
+    col = mix(col, vec3(lumFinal), smoothstep(0.6, 1.0, lumFinal) * 0.15);
 
     // Vignette
-    float vig = 1.0 - 0.35 * pow(length(uv * 0.85), 2.0);
-    col *= vig;
+    col *= 1.0 - 0.3 * pow(length(uv * 0.8), 2.5);
 
-    // Film grain
-    col += (hash2(uv * 500.0 + fract(uTime)) - 0.5) * 0.018;
+    // Single-layer grain (was 2)
+    col += (hash2(uv * 500.0 + fract(uTime * 0.4)) - 0.5) * 0.018;
+
+    // Ensure blacks stay black
+    col = max(col, vec3(0.0));
 
     gl_FragColor = vec4(col, 1.0);
 }
