@@ -26,10 +26,12 @@ uniform float uCamZoom;       // FOV zoom factor
 #define RS 2.0                  // Schwarzschild radius
 #define PHOTON_SPHERE 3.0       // Photon sphere at 1.5 * RS
 
-// Accretion disk - thin and crisp like Interstellar
+// Accretion disk - volumetric with visible thickness
 #define DISK_INNER 3.0
 #define DISK_OUTER 15.0
-#define DISK_HEIGHT 0.015       // Very thin disk for sharp look
+#define DISK_H0 0.042           // Base scale height ratio (H/r)
+#define DISK_FLARE 0.30         // How much disk thickens with radius
+#define DISK_CUTOFF 2.5         // Sample within N scale heights (optimized)
 
 // Camera defaults (now controlled by uniforms)
 #define CAM_DIST_DEFAULT 35.0
@@ -110,6 +112,50 @@ float keplerOmega(float r) {
     return sqrt(M / (r * r * r));
 }
 
+// Disk scale height - increases with radius (flaring)
+float getDiskScaleHeight(float r) {
+    // Normalized radius position
+    float rNorm = clamp((r - DISK_INNER) / (DISK_OUTER - DISK_INNER), 0.0, 1.0);
+    // Flaring: disk gets thicker at larger radii
+    float flare = 1.0 + DISK_FLARE * rNorm;
+    return DISK_H0 * r * flare;
+}
+
+// Gaussian vertical density profile
+float verticalDensity(float y, float H) {
+    float x = abs(y) / max(H, 0.001);
+    return exp(-0.5 * x * x);
+}
+
+// Vertical oscillation for filament bands - creates 3D undulating motion
+// Optimized: single sin call, precomputed omega passed in
+float getVerticalOscillation(float phi, float r, float time, float freq, float bandIndex, float omega) {
+    // Combined oscillation in single sin call
+    float phase = phi * freq * 0.2 + time * omega * 2.0 + bandIndex * 2.5 - r * 0.5;
+    float vOsc = sin(phase) * 0.08;  // Increased amplitude for visibility
+
+    // Amplitude decreases with radius (inner disk more active)
+    float radialFade = smoothstep(DISK_OUTER, DISK_INNER * 1.5, r);
+    return vOsc * radialFade;
+}
+
+// Large-scale FBM vertical warp - creates turbulent 3D bulges and waves
+// Optimized: single noise call with cheaper coordinate calculation
+float getVerticalWarp(float phi, float r, float time) {
+    // Simplified coordinates
+    float u = r * 0.12;
+    float v = phi * 0.4 + time * 0.06;
+
+    // Single noise call
+    float warp = noise(vec3(u, v, time * 0.12)) - 0.5;
+
+    // Amplitude varies with radius - more warping in mid-disk
+    float radialMod = smoothstep(DISK_INNER, DISK_INNER * 2.0, r) *
+                      smoothstep(DISK_OUTER, DISK_OUTER * 0.6, r);
+
+    return warp * 0.12 * radialMod;  // Increased amplitude for visibility
+}
+
 // Interstellar-inspired color palette
 vec3 interstellarDiskColor(float temp) {
     float t = clamp(temp, 0.0, 2.0);
@@ -137,14 +183,17 @@ vec3 blackbody(float temp) {
     return interstellarDiskColor(temp);
 }
 
-// Sample disk - DYNAMIC with turbulence, flares, and chaos
-vec4 sampleDisk(vec3 p, vec3 rayDir, float time, int crossingNum) {
+// Sample disk - VOLUMETRIC with turbulence, flares, and chaos
+vec4 sampleDiskVolumetric(vec3 p, vec3 rayDir, float time, int crossingNum, float verticalW, float stepLen) {
     float r = length(p.xz);
 
-    // Early out - disk bounds
+    // Early out - disk bounds or negligible vertical weight
     if (r < DISK_INNER * 0.95 || r > DISK_OUTER * 1.02) return vec4(0.0);
+    if (verticalW < 0.001) return vec4(0.0);
 
     float phi = atan(p.z, p.x);
+    float posY = p.y;  // Store actual y position for vertical oscillations
+    float H = getDiskScaleHeight(r);  // Get scale height for this radius
     float omega = sqrt(M / (r * r * r));
     float rotPhi = phi + time * omega * 0.35;
 
@@ -200,14 +249,12 @@ vec4 sampleDisk(vec3 p, vec3 rayDir, float time, int crossingNum) {
     b3c = pow(max(b3c, 0.0), 6.0);
     float band3 = (b3a * 0.35 + b3b * 0.35 + b3c * 0.3) * turbMaskFine;
 
-    // Band 4: Ultra-fine detail (freq 300-450) - strongest fine turbulence modulation
-    float b4a = sin(rotPhi * 300.0 - spiralWind * 20.0 + tOmega * 0.5 + phaseDisturb * 0.15);
-    float b4b = sin(rotPhi * 380.0 + spiralWind * 5.0 - tOmega + phaseDisturb * 0.1);
-    float b4c = sin(rotPhi * 450.0 - r * 20.0 + tOmega * 0.3);
+    // Band 4: Ultra-fine detail (freq 300-400) - optimized: 2 layers instead of 3
+    float b4a = sin(rotPhi * 300.0 - spiralWind * 20.0 + tOmega * 0.5);
+    float b4b = sin(rotPhi * 400.0 + spiralWind * 5.0 - tOmega);
     b4a = pow(max(b4a, 0.0), 7.0);
     b4b = pow(max(b4b, 0.0), 7.0);
-    b4c = pow(max(b4c, 0.0), 8.0);
-    float band4 = (b4a * 0.35 + b4b * 0.35 + b4c * 0.3) * turbMaskFine * turbMaskMed;
+    float band4 = (b4a * 0.5 + b4b * 0.5) * turbMaskFine * turbMaskMed;
 
     // Radial infall streaks (plunging matter near ISCO) - chaotic modulation
     float infall1 = sin(shearAngle * 120.0 + r * 8.0 - time * 2.5 + phaseDisturb);
@@ -221,8 +268,26 @@ vec4 sampleDisk(vec3 p, vec3 rayDir, float time, int crossingNum) {
     float filamentMask = smoothstep(DISK_INNER * 0.98, DISK_INNER * 1.15, r) *
                          smoothstep(DISK_OUTER * 1.02, DISK_OUTER * 0.85, r);
 
-    // Combine all bands - turbulence creates clumpy, non-uniform appearance
-    float filaments = (band1 * 0.30 + band2 * 0.28 + band3 * 0.22 + band4 * 0.12 + infallStreaks * 0.08) * filamentMask;
+    // ═══ VERTICAL OSCILLATION (Phase 3) - Optimized: 2 bands instead of 4 ═══
+    // Combine bands into 2 groups for efficiency
+    float vOsc1 = getVerticalOscillation(phi, r, time, 60.0, 0.0, omega);
+    float vOsc2 = getVerticalOscillation(phi, r, time, 200.0, 1.5, omega);
+
+    // Calculate vertical weight for each band group
+    float vWeight1 = verticalDensity(posY - vOsc1 * r, H);
+    float vWeight2 = verticalDensity(posY - vOsc2 * r, H);
+
+    // Normalize weights
+    float baseW = max(verticalW, 0.01);
+    vWeight1 = vWeight1 / baseW;
+    vWeight2 = vWeight2 / baseW;
+
+    // Combine bands: group low-freq (1,2) and high-freq (3,4) together
+    float lowFreqBands = band1 * 0.30 + band2 * 0.28;
+    float highFreqBands = band3 * 0.22 + band4 * 0.12;
+
+    float filaments = (lowFreqBands * vWeight1 + highFreqBands * vWeight2 +
+                       infallStreaks * 0.08) * filamentMask;
 
     // ═══ FINE GRAIN TEXTURE (Phase 3) ═══
     // Hash-based micro-texture - extremely cheap, adds surface roughness
@@ -440,7 +505,14 @@ vec4 sampleDisk(vec3 p, vec3 rayDir, float time, int crossingNum) {
     emission.r *= 1.0 + colorShift;
     emission.b *= 1.0 - colorShift * 0.5;
 
-    return vec4(emission, density * dopplerFac * gravFac * crossingBoost);
+    // Volumetric integration: apply vertical density profile and step length
+    // Opacity per unit length scaled by step
+    float kappa = density * verticalW * 2.5;  // Absorption coefficient
+    float dTau = kappa * stepLen;
+    dTau = clamp(dTau, 0.0, 4.0);
+    float alpha = 1.0 - exp(-dTau);
+
+    return vec4(emission * dopplerFac * gravFac * crossingBoost, alpha);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -587,7 +659,11 @@ void main() {
         vec3 accel = blackHoleAccel(pos);
 
         // ═══ ADAPTIVE STEPPING (optimized for extended range) ═══
-        float h = STEP_SIZE;
+        // Coarser steps when zoomed in (closer camera = more rays through disk)
+        float zoomFactor = smoothstep(20.0, 40.0, uCamDistance);  // 1.0 at far, 0.0 at close
+        float baseStep = STEP_SIZE * (1.0 + (1.0 - zoomFactor) * 0.4);  // Up to 40% larger steps when close
+
+        float h = baseStep;
         if (r < PHOTON_SPHERE + 0.3) {
             h *= 0.2;   // Fine near photon sphere
         } else if (r < 5.0) {
@@ -613,32 +689,51 @@ void main() {
 
 
         // ═══════════════════════════════════════════════════════════════════
-        // DISK CROSSING DETECTION - Key for Einstein ring!
+        // VOLUMETRIC DISK SAMPLING - Continuous integration through disk volume
         // ═══════════════════════════════════════════════════════════════════
 
-        bool crossedDisk = (lastY * newPos.y < 0.0);
-
-        if (crossedDisk) {
+        // Track plane crossings for Einstein ring boost
+        bool crossedPlane = (lastY * newPos.y < 0.0);
+        if (crossedPlane) {
             diskCrossings++;
+        }
 
-            // Interpolate to find exact crossing point
-            float t = abs(lastY) / (abs(lastY) + abs(newPos.y) + 1e-6);
-            vec3 crossPos = mix(pos, newPos, t);
-            float crossR = length(crossPos.xz);
+        // Sample disk volumetrically at midpoint of step
+        vec3 midPos = (pos + newPos) * 0.5;
+        float diskR = length(midPos.xz);
 
-            // Sample disk if within bounds
-            if (crossR > DISK_INNER * 0.9 && crossR < DISK_OUTER * 1.1) {
-                vec4 diskData = sampleDisk(crossPos, vel, uTime, diskCrossings);
+        // Check if within disk radial bounds
+        if (diskR > DISK_INNER * 0.92 && diskR < DISK_OUTER * 1.08) {
+            // Get scale height at this radius
+            float H = getDiskScaleHeight(diskR);
 
-                if (diskData.a > 0.001) {
-                    // Intensity scales with how close we are to photon sphere
-                    float photonBoost = 1.0 + exp(-minPhotonDist * minPhotonDist * 2.0);
-                    float light = diskData.a * 0.9 * photonBoost;
+            // Apply FBM vertical warp - creates large-scale 3D turbulent structure
+            float diskPhi = atan(midPos.z, midPos.x);
+            float vertWarp = getVerticalWarp(diskPhi, diskR, uTime);
+            float warpedY = midPos.y - vertWarp * diskR;
+            float diskY = abs(warpedY);
 
-                    col += diskData.rgb * light * transmission;
-                    transmission *= exp(-light * 0.3);
+            // Only sample within cutoff scale heights
+            if (diskY < H * DISK_CUTOFF) {
+                // Gaussian vertical density profile with warped position
+                float verticalW = verticalDensity(warpedY, H);
 
-                    if (transmission < 0.01) break;
+                // Skip negligible contributions - higher threshold when zoomed in
+                float zoomThreshold = 0.04 + (1.0 - smoothstep(20.0, 40.0, uCamDistance)) * 0.04;
+                if (verticalW > zoomThreshold) {
+                    // Sample the disk with volumetric parameters
+                    vec4 diskData = sampleDiskVolumetric(midPos, vel, uTime, diskCrossings, verticalW, h);
+
+                    if (diskData.a > 0.002) {
+                        // Intensity scales with how close we are to photon sphere
+                        float photonBoost = 1.0 + exp(-minPhotonDist * minPhotonDist * 2.0);
+
+                        // Volumetric accumulation
+                        col += diskData.rgb * diskData.a * transmission * photonBoost;
+                        transmission *= (1.0 - diskData.a);
+
+                        if (transmission < 0.01) break;
+                    }
                 }
             }
         }
