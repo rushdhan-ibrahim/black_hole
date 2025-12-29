@@ -148,19 +148,174 @@ vec4 sampleDisk(vec3 p, vec3 rayDir, float time, int crossingNum) {
     float omega = sqrt(M / (r * r * r));
     float rotPhi = phi + time * omega * 0.35;
 
-    // ═══ TURBULENT STRUCTURE (larger scale, faster) ═══
+    // ═══ MULTI-SCALE TURBULENCE (Phase 2) ═══
 
-    // Multi-scale turbulence - bigger features visible from afar
-    float turb1 = noise(vec3(r * 0.5, rotPhi * 1.0, time * 0.5)) - 0.5;
-    float turb2 = noise(vec3(r * 1.5, rotPhi * 3.0, time * 1.0)) - 0.5;
+    // Large-scale turbulence (clumps and voids)
+    float turb1 = noise(vec3(r * 0.4, rotPhi * 0.8, time * 0.4)) - 0.5;
+    // Medium-scale turbulence (density variations)
+    float turb2 = noise(vec3(r * 1.2, rotPhi * 2.5, time * 0.8)) - 0.5;
+    // Fine-scale turbulence (modulates fine filaments)
+    float turb3 = noise(vec3(r * 2.5, rotPhi * 5.0, time * 1.2)) - 0.5;
+
     float turbulence = turb1 * 0.5 + turb2 * 0.3;
 
-    // ═══ SPIRAL SHOCK WAVES (more prominent) ═══
-    // Two-armed spiral - larger, faster rotation
-    float spiralAngle = phi - log(r / DISK_INNER + 0.1) * 2.0 + time * 0.25;
-    float spiral = sin(spiralAngle * 2.0);
-    float shockFront = smoothstep(0.4, 0.9, spiral);  // Sharp leading edge
-    float spiralStrength = 0.4 + 0.6 * exp(-pow((r - DISK_INNER * 2.5) / 6.0, 2.0));
+    // Create turbulence masks for filament modulation
+    float turbMaskLarge = smoothstep(-0.3, 0.4, turb1);   // Large clumpy regions
+    float turbMaskMed = smoothstep(-0.2, 0.3, turb2);     // Medium density variation
+    float turbMaskFine = 0.6 + turb3 * 0.8;               // Fine detail modulation
+
+    // Phase displacement from turbulence (makes filaments wavy/distorted)
+    float phaseDisturb = turb1 * 3.0 + turb2 * 1.5;
+
+    // ═══ ULTRA-DENSE FILAMENT SYSTEM (Phase 1) ═══
+    // Precompute shared winding values
+    float shearAngle = rotPhi - (DISK_OUTER - r) * 0.8;
+    float spiralWind = log(r / DISK_INNER + 0.1);
+    float tOmega = time * omega;  // Precompute for reuse
+
+    // === FREQUENCY CASCADE with turbulence modulation ===
+
+    // Band 1: Base structure (freq 40-60) - modulated by large turbulence
+    float b1a = sin(rotPhi * 40.0 - spiralWind * 12.0 + tOmega * 2.0 + phaseDisturb);
+    float b1b = sin(rotPhi * 55.0 + spiralWind * 10.0 - tOmega * 1.8 + phaseDisturb * 0.8);
+    b1a = pow(max(b1a, 0.0), 4.0);
+    b1b = pow(max(b1b, 0.0), 4.0);
+    float band1 = (b1a * 0.5 + b1b * 0.5) * turbMaskLarge;
+
+    // Band 2: Medium detail (freq 80-120) - modulated by medium turbulence
+    float b2a = sin(rotPhi * 85.0 - spiralWind * 14.0 + tOmega * 1.5 + phaseDisturb * 0.6);
+    float b2b = sin(rotPhi * 100.0 + spiralWind * 8.0 - tOmega * 2.2 + phaseDisturb * 0.5);
+    float b2c = sin(rotPhi * 115.0 - spiralWind * 11.0 + tOmega * 1.2 + phaseDisturb * 0.4);
+    b2a = pow(max(b2a, 0.0), 5.0);
+    b2b = pow(max(b2b, 0.0), 5.0);
+    b2c = pow(max(b2c, 0.0), 5.0);
+    float band2 = (b2a * 0.35 + b2b * 0.35 + b2c * 0.3) * turbMaskMed;
+
+    // Band 3: Fine detail (freq 160-220) - modulated by fine turbulence
+    float b3a = sin(rotPhi * 160.0 - spiralWind * 16.0 + tOmega + phaseDisturb * 0.3);
+    float b3b = sin(rotPhi * 190.0 + spiralWind * 6.0 - tOmega * 1.5 + phaseDisturb * 0.25);
+    float b3c = sin(rotPhi * 220.0 - spiralWind * 18.0 + tOmega * 0.8 + phaseDisturb * 0.2);
+    b3a = pow(max(b3a, 0.0), 6.0);
+    b3b = pow(max(b3b, 0.0), 6.0);
+    b3c = pow(max(b3c, 0.0), 6.0);
+    float band3 = (b3a * 0.35 + b3b * 0.35 + b3c * 0.3) * turbMaskFine;
+
+    // Band 4: Ultra-fine detail (freq 300-450) - strongest fine turbulence modulation
+    float b4a = sin(rotPhi * 300.0 - spiralWind * 20.0 + tOmega * 0.5 + phaseDisturb * 0.15);
+    float b4b = sin(rotPhi * 380.0 + spiralWind * 5.0 - tOmega + phaseDisturb * 0.1);
+    float b4c = sin(rotPhi * 450.0 - r * 20.0 + tOmega * 0.3);
+    b4a = pow(max(b4a, 0.0), 7.0);
+    b4b = pow(max(b4b, 0.0), 7.0);
+    b4c = pow(max(b4c, 0.0), 8.0);
+    float band4 = (b4a * 0.35 + b4b * 0.35 + b4c * 0.3) * turbMaskFine * turbMaskMed;
+
+    // Radial infall streaks (plunging matter near ISCO) - chaotic modulation
+    float infall1 = sin(shearAngle * 120.0 + r * 8.0 - time * 2.5 + phaseDisturb);
+    float infall2 = sin(shearAngle * 200.0 - r * 12.0 + time * 1.8 + phaseDisturb * 0.7);
+    infall1 = pow(max(infall1, 0.0), 6.0);
+    infall2 = pow(max(infall2, 0.0), 7.0);
+    float infallMask = smoothstep(DISK_OUTER * 0.5, DISK_INNER * 1.2, r);
+    float infallStreaks = (infall1 * 0.5 + infall2 * 0.5) * infallMask * (0.5 + turbMaskLarge * 0.5);
+
+    // Edge falloff mask
+    float filamentMask = smoothstep(DISK_INNER * 0.98, DISK_INNER * 1.15, r) *
+                         smoothstep(DISK_OUTER * 1.02, DISK_OUTER * 0.85, r);
+
+    // Combine all bands - turbulence creates clumpy, non-uniform appearance
+    float filaments = (band1 * 0.30 + band2 * 0.28 + band3 * 0.22 + band4 * 0.12 + infallStreaks * 0.08) * filamentMask;
+
+    // ═══ FINE GRAIN TEXTURE (Phase 3) ═══
+    // Hash-based micro-texture - extremely cheap, adds surface roughness
+
+    // Coordinates that move with disk rotation
+    float grainPhi = rotPhi * 800.0;  // Very high frequency
+    float grainR = r * 100.0;
+
+    // Multi-scale grain layers using fast hash
+    float grain1 = hash2(vec2(grainPhi, grainR));
+    float grain2 = hash2(vec2(grainPhi * 0.7 + 100.0, grainR * 1.3));
+    float grain3 = hash2(vec2(grainPhi * 1.5 + 200.0, grainR * 0.8 + time * 5.0));
+
+    // Threshold to create sparse bright specks
+    grain1 = smoothstep(0.75, 0.95, grain1);
+    grain2 = smoothstep(0.80, 0.98, grain2);
+    grain3 = smoothstep(0.85, 0.99, grain3);  // Animated flickering specks
+
+    // Combine grain layers - finer toward center
+    float grainDensity = smoothstep(DISK_OUTER, DISK_INNER * 2.0, r);
+    float grain = (grain1 * 0.4 + grain2 * 0.35 + grain3 * 0.25) * grainDensity * 0.3;
+
+    // Add subtle continuous micro-variation
+    float microVar = hash2(vec2(grainPhi * 0.3, grainR * 0.5)) * 0.15;
+
+    // Combine grain with filaments
+    filaments += grain + microVar * filamentMask;
+
+    // ═══ MAGNETIC FIELD ALIGNED STRUCTURES (Phase 6) ═══
+    // Anisotropic texture that follows magnetic field topology
+
+    // Blend factor: 0 = azimuthal (orbiting), 1 = radial (plunging)
+    float radialBlend = smoothstep(DISK_INNER * 2.5, DISK_INNER * 1.0, r);
+
+    // Azimuthal structures (dominant in mid/outer disk - orbiting gas)
+    float azimuthal1 = sin(rotPhi * 150.0 + time * omega * 0.8);
+    float azimuthal2 = sin(rotPhi * 220.0 - time * omega * 0.6);
+    azimuthal1 = pow(max(azimuthal1, 0.0), 6.0);
+    azimuthal2 = pow(max(azimuthal2, 0.0), 7.0);
+    float azimuthalField = (azimuthal1 * 0.5 + azimuthal2 * 0.5);
+
+    // Radial structures (dominant near ISCO - plunging gas)
+    float radial1 = sin(phi * 60.0 + r * 25.0 - time * 3.0);
+    float radial2 = sin(phi * 90.0 - r * 30.0 + time * 2.5);
+    radial1 = pow(max(radial1, 0.0), 5.0);
+    radial2 = pow(max(radial2, 0.0), 6.0);
+    float radialField = (radial1 * 0.5 + radial2 * 0.5);
+
+    // Twisted field lines (magnetic field gets wound by differential rotation)
+    float twist = sin(rotPhi * 100.0 + r * 15.0 - spiralWind * 5.0 + time * 0.8);
+    twist = pow(max(twist, 0.0), 5.0) * 0.6;
+
+    // Blend between azimuthal and radial based on radius
+    float magField = mix(azimuthalField, radialField, radialBlend) + twist * (1.0 - radialBlend * 0.5);
+
+    // Apply turbulence modulation to magnetic structures
+    magField *= turbMaskMed * 0.8 + 0.2;
+
+    // Add magnetic field texture to filaments
+    filaments += magField * filamentMask * 0.2;
+
+    // ═══ ENHANCED MULTI-ARM SPIRAL SYSTEM (Phase 4) ═══
+    float logR = log(r / DISK_INNER + 0.1);
+
+    // Primary 2-arm spiral (grand design) - slow rotation
+    float spiral2angle = phi - logR * 2.0 + time * 0.2;
+    float spiral2 = sin(spiral2angle * 2.0);
+    float shock2 = smoothstep(0.3, 0.95, spiral2);  // Sharp leading edge
+    shock2 = pow(shock2, 1.5);  // Extra sharpness
+
+    // Secondary 3-arm spiral - faster, tighter winding
+    float spiral3angle = phi - logR * 2.8 + time * 0.35;
+    float spiral3 = sin(spiral3angle * 3.0);
+    float shock3 = smoothstep(0.4, 0.9, spiral3);
+
+    // Tertiary 5-arm fine ripples - fastest, creates texture
+    float spiral5angle = phi - logR * 3.5 + time * 0.5;
+    float spiral5 = sin(spiral5angle * 5.0);
+    float shock5 = smoothstep(0.5, 0.85, spiral5);
+    shock5 *= 0.6;  // Subtler
+
+    // Fine trailing ripples behind main arms
+    float rippleAngle = phi - logR * 4.0 - time * 0.15;
+    float ripples = sin(rippleAngle * 8.0) * 0.5 + 0.5;
+    ripples = pow(ripples, 3.0) * 0.4;
+
+    // Combine spirals with radius-dependent strength
+    float innerSpiral = smoothstep(DISK_OUTER, DISK_INNER * 2.0, r);  // Stronger near center
+    float outerSpiral = smoothstep(DISK_INNER, DISK_INNER * 3.0, r);  // Fade at very inner edge
+    float spiralMask = innerSpiral * outerSpiral;
+
+    float shockFront = (shock2 * 0.4 + shock3 * 0.3 + shock5 * 0.2 + ripples * 0.1) * spiralMask;
+    float spiralStrength = 0.5 + 0.5 * exp(-pow((r - DISK_INNER * 2.0) / 5.0, 2.0));
 
     // ═══ HOT SPOTS (larger, brighter flares) ═══
     float hotSpots = 0.0;
@@ -204,17 +359,30 @@ vec4 sampleDisk(vec3 p, vec3 rayDir, float time, int crossingNum) {
     density *= 0.45 + 0.4 * turbContrast + 0.25 * shockFront * spiralStrength;
     density += chaos * 0.5;
 
+    // Add filament detail to density
+    density += filaments * 0.25;
+
     // Inner edge glow
     float innerDist = (r - DISK_INNER) / 0.5;
     float innerGlow = exp(-innerDist * innerDist);
     density += innerGlow * 0.8;
 
-    // ═══ TEMPERATURE ═══
+    // ═══ TEMPERATURE with filament color variation (Phase 5) ═══
     float temp = pow(DISK_INNER / r, 0.85);
     temp += innerGlow * 0.35;
-    temp += shockFront * spiralStrength * 0.2;  // Shock heating
-    temp += hotSpots * 0.4;                      // Flare heating
-    temp += chaos * 0.3;                         // ISCO heating
+    temp += shockFront * spiralStrength * 0.25;  // Shock heating
+    temp += hotSpots * 0.4;                       // Flare heating
+    temp += chaos * 0.3;                          // ISCO heating
+
+    // Filament temperature variation - cores are hotter
+    float filamentHeat = filaments * 0.25;        // Base filament heating
+    filamentHeat += band1 * 0.15;                 // Large filaments extra heat
+    filamentHeat += grain * 0.2;                  // Grain specks are hot
+    temp += filamentHeat;
+
+    // Temperature variation along filaments (creates color streaks)
+    float tempVariation = sin(rotPhi * 25.0 - spiralWind * 8.0 + time * 0.5) * 0.5 + 0.5;
+    temp += tempVariation * filaments * 0.12;
 
     // Einstein ring boost - stronger for secondary images
     float crossingBoost = 1.0;
@@ -246,14 +414,31 @@ vec4 sampleDisk(vec3 p, vec3 rayDir, float time, int crossingNum) {
     // ═══ REDSHIFT ═══
     float gravFac = uRedshift > 0.5 ? sqrt(max(0.2, 1.0 - RS / r)) : 1.0;
 
-    // ═══ EMISSION COLOR ═══
+    // ═══ EMISSION COLOR with enhanced variation (Phase 5) ═══
     vec3 emission = interstellarDiskColor(temp * gravFac);
 
-    // Hot spots add white-hot glow
-    emission = mix(emission, vec3(1.0, 0.95, 0.85), hotSpots * 0.4);
+    // Filament cores glow brighter/whiter
+    vec3 filamentGlow = vec3(1.0, 0.92, 0.8);  // Warm white
+    emission = mix(emission, emission * filamentGlow, filaments * 0.4);
 
-    // Chaos adds intense brightness
-    emission += vec3(1.0, 0.8, 0.5) * chaos * 0.3;
+    // Fine grain creates bright specks
+    vec3 grainGlow = vec3(1.0, 0.95, 0.85);
+    emission = mix(emission, grainGlow, grain * 0.6);
+
+    // Hot spots add white-hot glow
+    emission = mix(emission, vec3(1.0, 0.95, 0.85), hotSpots * 0.5);
+
+    // Spiral shock fronts have slight color shift (compressed/heated gas)
+    vec3 shockColor = vec3(1.0, 0.88, 0.7);
+    emission = mix(emission, emission * shockColor, shockFront * 0.25);
+
+    // Chaos adds intense orange-white brightness
+    emission += vec3(1.0, 0.8, 0.5) * chaos * 0.35;
+
+    // Subtle color variation from turbulence (breaks up uniformity)
+    float colorShift = turb2 * 0.08;
+    emission.r *= 1.0 + colorShift;
+    emission.b *= 1.0 - colorShift * 0.5;
 
     return vec4(emission, density * dopplerFac * gravFac * crossingBoost);
 }
